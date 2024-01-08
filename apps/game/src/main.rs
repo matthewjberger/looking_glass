@@ -16,11 +16,27 @@ impl serenity::app::State for Game {
         renderer: &mut serenity::render::Renderer,
     ) {
         context.scene = serenity::gltf::import_gltf("resources/models/DamagedHelmet.glb").clone();
-
         let aspect_ratio = {
             let serenity::winit::dpi::PhysicalSize { width, height } = context.window.inner_size();
             width as f32 / height.max(1) as f32
         };
+        let camera = crate::scene::Camera {
+            projection: crate::scene::Projection::Perspective(crate::scene::PerspectiveCamera {
+                aspect_ratio: Some(aspect_ratio),
+                y_fov_rad: 90_f32.to_radians(),
+                z_far: None,
+                z_near: 0.01,
+            }),
+            orientation: Orientation {
+                min_radius: 1.0,
+                max_radius: 100.0,
+                radius: 5.0,
+                offset: nalgebra_glm::vec3(0.0, 0.0, 0.0),
+                sensitivity: nalgebra_glm::vec2(1.0, 1.0),
+                direction: nalgebra_glm::vec2(0_f32.to_radians(), 45_f32.to_radians()),
+            },
+        };
+
         renderer.view.import_scene(&context.scene, &renderer.gpu);
 
         context

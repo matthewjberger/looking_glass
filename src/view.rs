@@ -83,15 +83,13 @@ impl View {
         scene.walk_dfs(|node, _| {
             let offset = ubo_offset;
             ubo_offset += 1;
-            node.components.iter().for_each(|component| {
-                if let crate::scene::NodeComponent::Mesh(mesh_id) = component {
-                    let offset = (offset * gpu.alignment()) as wgpu::DynamicOffset;
-                    render_pass.set_bind_group(1, &self.dynamic_uniform_bind_group, &[offset]);
-                    if let Some(commands) = self.mesh_draw_commands.get(mesh_id) {
-                        execute_draw_commands(commands, render_pass);
-                    }
+            if let Some(mesh_id) = node.mesh.as_ref() {
+                let offset = (offset * gpu.alignment()) as wgpu::DynamicOffset;
+                render_pass.set_bind_group(1, &self.dynamic_uniform_bind_group, &[offset]);
+                if let Some(commands) = self.mesh_draw_commands.get(mesh_id) {
+                    execute_draw_commands(commands, render_pass);
                 }
-            });
+            }
         });
     }
 
@@ -213,33 +211,32 @@ fn create_uniform(gpu: &crate::gpu::Gpu) -> (wgpu::Buffer, wgpu::BindGroupLayout
 
 pub fn create_camera_matrices(
     scene: &crate::scene::Scene,
-    aspect_ratio: f32,
+    _aspect_ratio: f32,
 ) -> Option<(nalgebra_glm::Vec3, nalgebra_glm::Mat4, nalgebra_glm::Mat4)> {
-    let mut result = None;
-    scene.walk_dfs(|node, _| {
-        for component in node.components.iter() {
-            if let crate::scene::NodeComponent::Camera(camera) = component {
-                result = Some((
-                    // TODO: later this will need to be the translation of the global transform,
-                    //       need to be able to aggregate transforms without turning them in to glm::Mat4 first
-                    node.transform.translation,
-                    camera.projection_matrix(aspect_ratio),
-                    {
-                        let eye = node.transform.translation;
-                        let target = eye
-                            + nalgebra_glm::quat_rotate_vec3(
-                                &node.transform.rotation.normalize(),
-                                &(-nalgebra_glm::Vec3::z()),
-                            );
-                        let up = nalgebra_glm::quat_rotate_vec3(
-                            &node.transform.rotation.normalize(),
-                            &nalgebra_glm::Vec3::y(),
-                        );
-                        nalgebra_glm::look_at(&eye, &target, &up)
-                    },
-                ));
-            }
-        }
+    let result = None;
+    scene.walk_dfs(|_node, _| {
+        // TODO camera controls
+        // if let crate::scene::NodeComponent::Camera(camera) = component {
+        //     result = Some((
+        //         // TODO: later this will need to be the translation of the global transform,
+        //         //       need to be able to aggregate transforms without turning them in to glm::Mat4 first
+        //         node.transform.translation,
+        //         camera.projection_matrix(aspect_ratio),
+        //         {
+        //             let eye = node.transform.translation;
+        //             let target = eye
+        //                 + nalgebra_glm::quat_rotate_vec3(
+        //                     &node.transform.rotation.normalize(),
+        //                     &(-nalgebra_glm::Vec3::z()),
+        //                 );
+        //             let up = nalgebra_glm::quat_rotate_vec3(
+        //                 &node.transform.rotation.normalize(),
+        //                 &nalgebra_glm::Vec3::y(),
+        //             );
+        //             nalgebra_glm::look_at(&eye, &target, &up)
+        //         },
+        //     ));
+        // }
     });
     result
 }

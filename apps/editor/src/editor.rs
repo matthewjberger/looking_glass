@@ -54,13 +54,32 @@ impl Editor {
                     }
                     Command::ImportGltfFile(path) => {
                         context.scene = serenity::gltf::import_gltf(&path).clone();
-                        if !context.scene.has_camera() {
-                            context
-                                .scene
-                                .add_root_node(serenity::scene::create_camera_node(
-                                    renderer.gpu.aspect_ratio(),
-                                ));
+
+                        if !context
+                            .scene
+                            .graph
+                            .node_weights()
+                            .any(|node| node.camera.is_some())
+                        {
+                            // crate::scene::Camera {
+                            //     projection: crate::scene::Projection::Perspective(crate::scene::PerspectiveCamera {
+                            //         aspect_ratio: Some(aspect_ratio),
+                            //         y_fov_rad: 90_f32.to_radians(),
+                            //         z_far: None,
+                            //         z_near: 0.01,
+                            //     }),
+                            //     orientation: Orientation {
+                            //         min_radius: 1.0,
+                            //         max_radius: 100.0,
+                            //         radius: 5.0,
+                            //         offset: nalgebra_glm::vec3(0.0, 0.0, 0.0),
+                            //         sensitivity: nalgebra_glm::vec2(1.0, 1.0),
+                            //         direction: nalgebra_glm::vec2(0_f32.to_radians(), 45_f32.to_radians()),
+                            //     },
+                            // }
+                            // context.scene.add_root_node(serenity::scene::create_camera_node());
                         }
+                        // TODO: remove renderer from state trait by deferring this
                         renderer.view.import_scene(&context.scene, &renderer.gpu);
                     }
                 },
@@ -213,23 +232,24 @@ impl serenity::app::State for Editor {
                     .id_source(ui.next_auto_id())
                     .show(ui, |ui| {
                         if let Some(selected) = self.selected {
-                            let node = &mut context.scene.graph[selected];
+                            let _node = &mut context.scene.graph[selected];
                             egui::ScrollArea::vertical()
                                 .id_source(ui.next_auto_id())
-                                .show(ui, |ui| {
-                                    for component in node.components.iter_mut() {
-                                        ui.group(|ui| match component {
-                                            serenity::scene::NodeComponent::Camera(_) => {
-                                                ui.heading("Camera");
-                                            }
-                                            serenity::scene::NodeComponent::Mesh(_) => {
-                                                ui.heading("Mesh");
-                                            }
-                                            serenity::scene::NodeComponent::Light(_) => {
-                                                ui.heading("Light");
-                                            }
-                                        });
-                                    }
+                                .show(ui, |_ui| {
+                                    // TODO add back in inspector views
+                                    // for component in node.components.iter_mut() {
+                                    //     ui.group(|ui| match component {
+                                    //         serenity::scene::NodeComponent::Camera(_) => {
+                                    //             ui.heading("Camera");
+                                    //         }
+                                    //         serenity::scene::NodeComponent::Mesh(_) => {
+                                    //             ui.heading("Mesh");
+                                    //         }
+                                    //         serenity::scene::NodeComponent::Light(_) => {
+                                    //             ui.heading("Light");
+                                    //         }
+                                    //     });
+                                    // }
                                 });
                         }
                     });
@@ -318,61 +338,62 @@ fn node_header_ui(
 }
 
 fn camera_system(context: &mut serenity::app::Context) {
-    context.scene.walk_dfs_mut(|node, _| {
-        node.components.iter_mut().for_each(|component| {
-            if let serenity::scene::NodeComponent::Camera(camera) = component {
-                let speed = 10.0 * context.delta_time as f32;
-                if context.io.is_key_pressed(winit::event::VirtualKeyCode::W) {
-                    camera.orientation.offset -= camera.orientation.direction() * speed;
-                }
-                if context.io.is_key_pressed(winit::event::VirtualKeyCode::A) {
-                    camera.orientation.offset += camera.orientation.right() * speed;
-                }
-                if context.io.is_key_pressed(winit::event::VirtualKeyCode::S) {
-                    camera.orientation.offset += camera.orientation.direction() * speed;
-                }
-                if context.io.is_key_pressed(winit::event::VirtualKeyCode::D) {
-                    camera.orientation.offset -= camera.orientation.right() * speed;
-                }
-                if context
-                    .io
-                    .is_key_pressed(winit::event::VirtualKeyCode::Space)
-                {
-                    camera.orientation.offset += camera.orientation.up() * speed;
-                }
-                if context
-                    .io
-                    .is_key_pressed(winit::event::VirtualKeyCode::LShift)
-                {
-                    camera.orientation.offset -= camera.orientation.up() * speed;
-                }
+    context.scene.walk_dfs_mut(|_node, _| {
+        // TODO add camera controls back
+        // node.components.iter_mut().for_each(|component| {
+        //     if let serenity::scene::NodeComponent::Camera(camera) = component {
+        //         let speed = 10.0 * context.delta_time as f32;
+        //         if context.io.is_key_pressed(winit::event::VirtualKeyCode::W) {
+        //             camera.orientation.offset -= camera.orientation.direction() * speed;
+        //         }
+        //         if context.io.is_key_pressed(winit::event::VirtualKeyCode::A) {
+        //             camera.orientation.offset += camera.orientation.right() * speed;
+        //         }
+        //         if context.io.is_key_pressed(winit::event::VirtualKeyCode::S) {
+        //             camera.orientation.offset += camera.orientation.direction() * speed;
+        //         }
+        //         if context.io.is_key_pressed(winit::event::VirtualKeyCode::D) {
+        //             camera.orientation.offset -= camera.orientation.right() * speed;
+        //         }
+        //         if context
+        //             .io
+        //             .is_key_pressed(winit::event::VirtualKeyCode::Space)
+        //         {
+        //             camera.orientation.offset += camera.orientation.up() * speed;
+        //         }
+        //         if context
+        //             .io
+        //             .is_key_pressed(winit::event::VirtualKeyCode::LShift)
+        //         {
+        //             camera.orientation.offset -= camera.orientation.up() * speed;
+        //         }
 
-                camera
-                    .orientation
-                    .zoom(6.0 * context.io.mouse.wheel_delta.y * (context.delta_time as f32));
+        //         camera
+        //             .orientation
+        //             .zoom(6.0 * context.io.mouse.wheel_delta.y * (context.delta_time as f32));
 
-                if context.io.mouse.is_middle_clicked {
-                    camera
-                        .orientation
-                        .pan(&(context.io.mouse.position_delta * context.delta_time as f32));
-                }
-                node.transform.translation = camera.orientation.position();
+        //         if context.io.mouse.is_middle_clicked {
+        //             camera
+        //                 .orientation
+        //                 .pan(&(context.io.mouse.position_delta * context.delta_time as f32));
+        //         }
+        //         node.transform.translation = camera.orientation.position();
 
-                if context.io.is_key_pressed(winit::event::VirtualKeyCode::H) {
-                    node.transform.translation = nalgebra_glm::Vec3::new(1.0, 1.0, 1.0) * 4.0;
-                    camera.orientation.offset = nalgebra_glm::Vec3::new(0.0, 0.0, 0.0);
-                }
+        //         if context.io.is_key_pressed(winit::event::VirtualKeyCode::H) {
+        //             node.transform.translation = nalgebra_glm::Vec3::new(1.0, 1.0, 1.0) * 4.0;
+        //             camera.orientation.offset = nalgebra_glm::Vec3::new(0.0, 0.0, 0.0);
+        //         }
 
-                if context.io.mouse.is_right_clicked {
-                    let mut delta = context.io.mouse.position_delta * context.delta_time as f32;
-                    delta.x *= -1.0;
-                    delta.y *= -1.0;
-                    camera.orientation.rotate(&delta);
-                }
+        //         if context.io.mouse.is_right_clicked {
+        //             let mut delta = context.io.mouse.position_delta * context.delta_time as f32;
+        //             delta.x *= -1.0;
+        //             delta.y *= -1.0;
+        //             camera.orientation.rotate(&delta);
+        //         }
 
-                node.transform.rotation = camera.orientation.look_at_offset();
-            }
-        });
+        //         node.transform.rotation = camera.orientation.look_at_offset();
+        //     }
+        // });
     });
 }
 

@@ -8,6 +8,7 @@ pub fn import_gltf(path: impl AsRef<std::path::Path>) -> crate::scene::Scene {
     let (node_ids, graph) = import_graph(&gltf, &mesh_ids);
     let (animations, _animation_ids) = import_animations(&gltf, &node_ids, &buffers);
     let (skins, _skin_ids) = import_skins(&gltf, &buffers, &node_ids);
+
     crate::scene::Scene {
         graph,
         images,
@@ -388,24 +389,26 @@ fn import_node(
 ) {
     let mut components = Vec::new();
 
-    if let Some(mesh) = gltf_node.mesh() {
-        let mesh_id = mesh_handles[mesh.index()].to_string();
-        components.push(crate::scene::NodeComponent::Mesh(mesh_id));
-    }
-
     if let Some(camera) = gltf_node.camera() {
         components.push(crate::scene::NodeComponent::Camera(camera.into()));
-    }
-
-    if let Some(light) = gltf_node.light() {
-        components.push(crate::scene::NodeComponent::Light(light.into()));
     }
 
     let scene_node = crate::scene::Node {
         id: node_ids[gltf_node.index()].to_string().to_string(),
         label: gltf_node.name().unwrap_or("Unnamed node").to_string(),
         transform: crate::scene::Transform::from(gltf_node.transform().decomposed()),
-        components,
+        mesh: gltf_node
+            .mesh()
+            .as_ref()
+            .map(|mesh| mesh_handles[mesh.index()].to_string()),
+        light: gltf_node
+            .light()
+            .as_ref()
+            .map(|light| mesh_handles[light.index()].to_string()),
+        camera: gltf_node
+            .camera()
+            .as_ref()
+            .map(|camera| mesh_handles[camera.index()].to_string()),
     };
 
     let node_index = scenegraph.add_node(scene_node);

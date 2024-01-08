@@ -10,58 +10,8 @@ pub struct Scene {
     pub skins: std::collections::HashMap<String, Skin>,
 }
 
-pub fn create_camera_node(aspect_ratio: f32) -> Node {
-    crate::scene::Node {
-        id: uuid::Uuid::new_v4().to_string(),
-        label: "Main Camera".to_string(),
-        transform: crate::scene::Transform {
-            translation: nalgebra_glm::vec3(0.0, 0.0, 4.0),
-            ..Default::default()
-        },
-        components: vec![crate::scene::NodeComponent::Camera(crate::scene::Camera {
-            projection: crate::scene::Projection::Perspective(crate::scene::PerspectiveCamera {
-                aspect_ratio: Some(aspect_ratio),
-                y_fov_rad: 90_f32.to_radians(),
-                z_far: None,
-                z_near: 0.01,
-            }),
-            orientation: Orientation {
-                min_radius: 1.0,
-                max_radius: 100.0,
-                radius: 5.0,
-                offset: nalgebra_glm::vec3(0.0, 0.0, 0.0),
-                sensitivity: nalgebra_glm::vec2(1.0, 1.0),
-                direction: nalgebra_glm::vec2(0_f32.to_radians(), 45_f32.to_radians()),
-            },
-        })],
-    }
-}
-
 impl Scene {
-    pub fn has_camera(&self) -> bool {
-        let mut has_camera = false;
-        self.walk_dfs(|node, _| {
-            for component in node.components.iter() {
-                if let crate::scene::NodeComponent::Camera(_) = component {
-                    has_camera = true;
-                    return;
-                }
-            }
-        });
-        has_camera
-    }
-
-    pub fn add_root_node(&mut self, node: crate::scene::Node) -> petgraph::graph::NodeIndex {
-        let child = self.graph.add_node(node);
-        self.graph
-            .add_edge(petgraph::graph::NodeIndex::new(0), child, ());
-        child
-    }
-
     pub fn walk_dfs(&self, mut visit_node: impl FnMut(&Node, petgraph::graph::NodeIndex)) {
-        if self.graph.0.node_count() == 0 {
-            return;
-        }
         let mut dfs = petgraph::visit::Dfs::new(&self.graph.0, petgraph::graph::NodeIndex::new(0));
         while let Some(node_index) = dfs.next(&self.graph.0) {
             visit_node(&self.graph.0[node_index], node_index);
@@ -72,9 +22,6 @@ impl Scene {
         &mut self,
         mut visit_node: impl FnMut(&mut Node, petgraph::graph::NodeIndex),
     ) {
-        if self.graph.0.node_count() == 0 {
-            return;
-        }
         let mut dfs = petgraph::visit::Dfs::new(&self.graph.0, petgraph::graph::NodeIndex::new(0));
         while let Some(node_index) = dfs.next(&self.graph.0) {
             visit_node(&mut self.graph.0[node_index], node_index);
@@ -92,36 +39,32 @@ impl Scene {
             (Vec::new(), Vec::new(), std::collections::HashMap::new());
 
         self.walk_dfs(|node, _| {
-            for component in node.components.iter() {
-                if let crate::scene::NodeComponent::Mesh(mesh_id) = component {
-                    let commands = self.meshes[mesh_id]
-                        .primitives
-                        .iter()
-                        .map(|primitive| {
-                            let primitive_vertices = primitive.vertices.to_vec();
-                            let vertex_offset = vertices.len();
-                            let number_of_vertices = primitive.vertices.len();
-                            vertices.extend_from_slice(&primitive_vertices);
-
-                            let primitive_indices = primitive
-                                .indices
-                                .iter()
-                                .map(|x| *x as u16)
-                                .collect::<Vec<_>>();
-                            let index_offset = indices.len();
-                            let number_of_indices = primitive.indices.len();
-                            indices.extend_from_slice(&primitive_indices);
-
-                            PrimitiveDrawCommand {
-                                vertex_offset,
-                                index_offset,
-                                vertices: number_of_vertices,
-                                indices: number_of_indices,
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    meshes.insert(mesh_id.clone(), commands);
-                }
+            if let Some(mesh_id) = node.mesh.as_ref() {
+                let commands = self.meshes[mesh_id]
+                    .primitives
+                    .iter()
+                    .map(|primitive| {
+                        let primitive_vertices = primitive.vertices.to_vec();
+                        let vertex_offset = vertices.len();
+                        let number_of_vertices = primitive.vertices.len();
+                        vertices.extend_from_slice(&primitive_vertices);
+                        let primitive_indices = primitive
+                            .indices
+                            .iter()
+                            .map(|x| *x as u16)
+                            .collect::<Vec<_>>();
+                        let index_offset = indices.len();
+                        let number_of_indices = primitive.indices.len();
+                        indices.extend_from_slice(&primitive_indices);
+                        PrimitiveDrawCommand {
+                            vertex_offset,
+                            index_offset,
+                            vertices: number_of_vertices,
+                            indices: number_of_indices,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                meshes.insert(mesh_id.clone(), commands);
             }
         });
 
@@ -217,7 +160,9 @@ pub struct Node {
     pub id: String,
     pub label: String,
     pub transform: Transform,
-    pub components: Vec<NodeComponent>,
+    pub mesh: Option<String>,
+    pub camera: Option<String>,
+    pub light: Option<String>,
 }
 
 impl std::fmt::Debug for Node {
@@ -228,10 +173,7 @@ impl std::fmt::Debug for Node {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum NodeComponent {
-    // TODO: make these just take strings that key into the scene's resources
     Camera(Camera),
-    Mesh(String),
-    Light(Light),
 }
 
 #[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize)]
