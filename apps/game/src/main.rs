@@ -13,7 +13,7 @@ impl serenity::app::State for Game {
     fn initialize(
         &mut self,
         context: &mut serenity::app::Context,
-        renderer: &mut serenity::render::Renderer,
+        renderer: &mut serenity::renderer::Renderer,
     ) {
         // context.scene = serenity::gltf::import_gltf_resources("resources/models/DamagedHelmet.glb")
         //     .clone()
@@ -74,7 +74,7 @@ impl serenity::app::State for Game {
     fn update(
         &mut self,
         context: &mut serenity::app::Context,
-        _renderer: &mut serenity::render::Renderer,
+        _renderer: &mut serenity::renderer::Renderer,
     ) {
         if context.io.is_key_pressed(winit::event::VirtualKeyCode::W) {
             // context.scene.graph[self.player_node_index]
