@@ -3,8 +3,8 @@ pub struct Context {
     pub io: crate::io::Io,
     pub delta_time: f64,
     pub last_frame: std::time::Instant,
-    pub scene: crate::scene::Scene,
     pub should_exit: bool,
+    pub resources: crate::scene::ResourceMap,
 }
 
 pub trait State {
@@ -43,8 +43,8 @@ impl App {
             io: crate::io::Io::default(),
             delta_time: 0.01,
             last_frame: std::time::Instant::now(),
-            scene: crate::scene::Scene::default(),
             should_exit: false,
+            resources: crate::scene::ResourceMap::default(),
         };
         Self {
             event_loop,

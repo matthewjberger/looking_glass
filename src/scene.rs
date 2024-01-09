@@ -1,634 +1,446 @@
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Scene {
-    pub graph: SceneGraph,
-    pub images: std::collections::HashMap<String, Image>,
-    pub samplers: std::collections::HashMap<String, Sampler>,
-    pub textures: std::collections::HashMap<String, Texture>,
-    pub materials: std::collections::HashMap<String, Material>,
-    pub meshes: std::collections::HashMap<String, Mesh>,
-    pub animations: std::collections::HashMap<String, Animation>,
-    pub skins: std::collections::HashMap<String, Skin>,
+pub struct View {
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
+    pub uniform_buffer: wgpu::Buffer,
+    pub uniform_bind_group: wgpu::BindGroup,
+    pub dynamic_uniform_buffer: wgpu::Buffer,
+    pub dynamic_uniform_bind_group: wgpu::BindGroup,
+    pub pipeline: wgpu::RenderPipeline,
+    pub mesh_draw_commands:
+        std::collections::HashMap<String, Vec<crate::resource::PrimitiveDrawCommand>>,
 }
 
-pub fn create_camera_node(aspect_ratio: f32) -> Node {
-    crate::scene::Node {
-        id: uuid::Uuid::new_v4().to_string(),
-        label: "Main Camera".to_string(),
-        transform: crate::scene::Transform {
-            translation: nalgebra_glm::vec3(0.0, 0.0, 4.0),
-            ..Default::default()
-        },
-        components: vec![crate::scene::NodeComponent::Camera(crate::scene::Camera {
-            projection: crate::scene::Projection::Perspective(crate::scene::PerspectiveCamera {
-                aspect_ratio: Some(aspect_ratio),
-                y_fov_rad: 90_f32.to_radians(),
-                z_far: None,
-                z_near: 0.01,
+impl View {
+    pub const MAX_NUMBER_OF_MESHES: usize = 10_000;
+
+    pub fn new(gpu: &crate::gpu::Gpu) -> Self {
+        let (vertex_buffer, index_buffer) = create_geometry_buffers(&gpu.device, &[], &[]);
+        let (uniform_buffer, uniform_bind_group_layout, uniform_bind_group) = create_uniform(gpu);
+        let (dynamic_uniform_buffer, dynamic_uniform_bind_group_layout, dynamic_uniform_bind_group) =
+            create_dynamic_uniform(gpu, Self::MAX_NUMBER_OF_MESHES as _);
+
+        let pipeline = create_pipeline(
+            gpu,
+            &[
+                &uniform_bind_group_layout,
+                &dynamic_uniform_bind_group_layout,
+            ],
+        );
+
+        Self {
+            vertex_buffer,
+            index_buffer,
+            uniform_buffer,
+            uniform_bind_group,
+            dynamic_uniform_buffer,
+            dynamic_uniform_bind_group,
+            pipeline,
+            mesh_draw_commands: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn render<'rp>(
+        &'rp self,
+        render_pass: &mut wgpu::RenderPass<'rp>,
+        gpu: &crate::gpu::Gpu,
+        resources: &mut crate::resource::ResourceMap,
+    ) {
+        let (camera_position, projection, view) = (
+            nalgebra_glm::Vec3::identity(),
+            nalgebra_glm::Mat4::identity(),
+            nalgebra_glm::Mat4::identity(),
+        );
+        //     create_camera_matrices(scene, gpu.aspect_ratio()).unwrap_or_default();
+        gpu.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[Uniform {
+                view,
+                projection,
+                camera_position: nalgebra_glm::vec3_to_vec4(&camera_position),
+            }]),
+        );
+
+        let mut mesh_ubos = vec![DynamicUniform::default(); View::MAX_NUMBER_OF_MESHES];
+        let mut ubo_offset = 0;
+        // scene.walk_dfs(|_, _| {
+        //     mesh_ubos[ubo_offset] = DynamicUniform {
+        //         // model: scene.graph.global_transform(node_index),
+        //         model: nalgebra_glm::Mat4::identity(),
+        //     };
+        //     ubo_offset += 1;
+        // });
+        gpu.queue
+            .write_buffer(&self.dynamic_uniform_buffer, 0, unsafe {
+                std::slice::from_raw_parts(
+                    mesh_ubos.as_ptr() as *const u8,
+                    mesh_ubos.len() * gpu.alignment() as usize,
+                )
+            });
+
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
+        // let mut ubo_offset = 0;
+        // scene.walk_dfs(|node, _| {
+        //     let offset = ubo_offset;
+        //     ubo_offset += 1;
+        //     node.components.iter().for_each(|component| {
+        //         if let crate::scene::NodeComponent::Mesh(mesh_id) = component {
+        //             let offset = (offset * gpu.alignment()) as wgpu::DynamicOffset;
+        //             render_pass.set_bind_group(1, &self.dynamic_uniform_bind_group, &[offset]);
+        //             if let Some(commands) = self.mesh_draw_commands.get(mesh_id) {
+        //                 execute_draw_commands(commands, render_pass);
+        //             }
+        //         }
+        //     });
+        // });
+    }
+
+    //     pub fn import_scene(&mut self, scene: gpu: &crate::gpu::Gpu) {
+    //         todo!()
+    //         // let (vertices, indices, mesh_draw_commands) = scene.flatten_geometry();
+    //         // let (vertex_buffer, index_buffer) =
+    //         //     create_geometry_buffers(&gpu.device, &vertices, &indices);
+    //         // self.vertex_buffer = vertex_buffer;
+    //         // self.index_buffer = index_buffer;
+    //         // self.mesh_draw_commands = mesh_draw_commands;
+    //     }
+}
+
+fn execute_draw_commands(
+    commands: &[crate::resource::PrimitiveDrawCommand],
+    render_pass: &mut wgpu::RenderPass,
+) {
+    commands.iter().for_each(|command| {
+        let index_offset = command.index_offset as u32;
+        let number_of_indices = index_offset + command.indices as u32;
+        render_pass.draw_indexed(
+            index_offset..number_of_indices,
+            command.vertex_offset as i32,
+            0..1, // TODO: support multiple instances per primitive
+        );
+    });
+}
+
+fn create_dynamic_uniform(
+    gpu: &crate::gpu::Gpu,
+    max_meshes: wgpu::BufferAddress,
+) -> (wgpu::Buffer, wgpu::BindGroupLayout, wgpu::BindGroup) {
+    let dynamic_uniform_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("dynamic_uniform_buffer"),
+        size: max_meshes * gpu.alignment(),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let dynamic_uniform_bind_group_layout =
+        gpu.device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<DynamicUniform>() as _,
+                        ),
+                    },
+                    count: None,
+                }],
+                label: Some("dynamic_uniform_buffer_layout"),
+            });
+
+    let dynamic_uniform_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &dynamic_uniform_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &dynamic_uniform_buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(std::mem::size_of::<DynamicUniform>() as _),
             }),
-            orientation: Orientation {
-                min_radius: 1.0,
-                max_radius: 100.0,
-                radius: 5.0,
-                offset: nalgebra_glm::vec3(0.0, 0.0, 0.0),
-                sensitivity: nalgebra_glm::vec2(1.0, 1.0),
-                direction: nalgebra_glm::vec2(0_f32.to_radians(), 45_f32.to_radians()),
-            },
-        })],
-    }
+        }],
+        label: Some("dynamic_uniform_bind_group"),
+    });
+
+    (
+        dynamic_uniform_buffer,
+        dynamic_uniform_bind_group_layout,
+        dynamic_uniform_bind_group,
+    )
 }
 
-impl Scene {
-    pub fn has_camera(&self) -> bool {
-        let mut has_camera = false;
-        self.walk_dfs(|node, _| {
-            for component in node.components.iter() {
-                if let crate::scene::NodeComponent::Camera(_) = component {
-                    has_camera = true;
-                    return;
-                }
-            }
-        });
-        has_camera
-    }
+fn create_uniform(gpu: &crate::gpu::Gpu) -> (wgpu::Buffer, wgpu::BindGroupLayout, wgpu::BindGroup) {
+    let uniform_buffer = wgpu::util::DeviceExt::create_buffer_init(
+        &gpu.device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("uniform_buffer"),
+            contents: bytemuck::cast_slice(&[Uniform::default()]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        },
+    );
 
-    pub fn add_root_node(&mut self, node: crate::scene::Node) -> petgraph::graph::NodeIndex {
-        let child = self.graph.add_node(node);
-        self.graph
-            .add_edge(petgraph::graph::NodeIndex::new(0), child, ());
-        child
-    }
+    let uniform_bind_group_layout =
+        gpu.device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("uniform_bind_group_layout"),
+            });
 
-    pub fn walk_dfs(&self, mut visit_node: impl FnMut(&Node, petgraph::graph::NodeIndex)) {
-        if self.graph.0.node_count() == 0 {
-            return;
-        }
-        let mut dfs = petgraph::visit::Dfs::new(&self.graph.0, petgraph::graph::NodeIndex::new(0));
-        while let Some(node_index) = dfs.next(&self.graph.0) {
-            visit_node(&self.graph.0[node_index], node_index);
-        }
-    }
+    let uniform_bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &uniform_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        }],
+        label: Some("uniform_bind_group"),
+    });
 
-    pub fn walk_dfs_mut(
-        &mut self,
-        mut visit_node: impl FnMut(&mut Node, petgraph::graph::NodeIndex),
-    ) {
-        if self.graph.0.node_count() == 0 {
-            return;
-        }
-        let mut dfs = petgraph::visit::Dfs::new(&self.graph.0, petgraph::graph::NodeIndex::new(0));
-        while let Some(node_index) = dfs.next(&self.graph.0) {
-            visit_node(&mut self.graph.0[node_index], node_index);
-        }
-    }
+    (
+        uniform_buffer,
+        uniform_bind_group_layout,
+        uniform_bind_group,
+    )
+}
 
-    pub fn flatten_geometry(
-        &self,
-    ) -> (
-        Vec<crate::scene::Vertex>,
-        Vec<u16>,
-        std::collections::HashMap<String, Vec<PrimitiveDrawCommand>>,
-    ) {
-        let (mut vertices, mut indices, mut meshes) =
-            (Vec::new(), Vec::new(), std::collections::HashMap::new());
+// pub fn create_camera_matrices(
+//     scene: &crate::scene::Scene,
+//     aspect_ratio: f32,
+// ) -> Option<(nalgebra_glm::Vec3, nalgebra_glm::Mat4, nalgebra_glm::Mat4)> {
+//     // let mut result = None;
+//     // scene.walk_dfs(|node, _| {
+//     //     // for component in node.components.iter() {
+//     //     //     if let crate::scene::NodeComponent::Camera(camera) = component {
+//     //     //         result = Some((
+//     //     //             // TODO: later this will need to be the translation of the global transform,
+//     //     //             //       need to be able to aggregate transforms without turning them in to glm::Mat4 first
+//     //     //             node.transform.translation,
+//     //     //             camera.projection_matrix(aspect_ratio),
+//     //     //             {
+//     //     //                 let eye = node.transform.translation;
+//     //     //                 let target = eye
+//     //     //                     + nalgebra_glm::quat_rotate_vec3(
+//     //     //                         &node.transform.rotation.normalize(),
+//     //     //                         &(-nalgebra_glm::Vec3::z()),
+//     //     //                     );
+//     //     //                 let up = nalgebra_glm::quat_rotate_vec3(
+//     //     //                     &node.transform.rotation.normalize(),
+//     //     //                     &nalgebra_glm::Vec3::y(),
+//     //     //                 );
+//     //     //                 nalgebra_glm::look_at(&eye, &target, &up)
+//     //     //             },
+//     //     //         ));
+//     //     //     }
+//     //     // }
+//     // });
+//     // result
+// }
 
-        self.walk_dfs(|node, _| {
-            for component in node.components.iter() {
-                if let crate::scene::NodeComponent::Mesh(mesh_id) = component {
-                    let commands = self.meshes[mesh_id]
-                        .primitives
-                        .iter()
-                        .map(|primitive| {
-                            let primitive_vertices = primitive.vertices.to_vec();
-                            let vertex_offset = vertices.len();
-                            let number_of_vertices = primitive.vertices.len();
-                            vertices.extend_from_slice(&primitive_vertices);
+fn create_geometry_buffers(
+    device: &wgpu::Device,
+    vertices: &[crate::resource::Vertex],
+    indices: &[u16],
+) -> (wgpu::Buffer, wgpu::Buffer) {
+    let vertex_buffer = wgpu::util::DeviceExt::create_buffer_init(
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        },
+    );
+    let index_buffer = wgpu::util::DeviceExt::create_buffer_init(
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(indices),
+            usage: wgpu::BufferUsages::INDEX,
+        },
+    );
+    (vertex_buffer, index_buffer)
+}
 
-                            let primitive_indices = primitive
-                                .indices
-                                .iter()
-                                .map(|x| *x as u16)
-                                .collect::<Vec<_>>();
-                            let index_offset = indices.len();
-                            let number_of_indices = primitive.indices.len();
-                            indices.extend_from_slice(&primitive_indices);
+#[repr(C)]
+#[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Light {
+    position: nalgebra_glm::Vec4,
+    color: nalgebra_glm::Vec4,
+}
 
-                            PrimitiveDrawCommand {
-                                vertex_offset,
-                                index_offset,
-                                vertices: number_of_vertices,
-                                indices: number_of_indices,
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    meshes.insert(mesh_id.clone(), commands);
-                }
-            }
-        });
-
-        (vertices, indices, meshes)
+impl Light {
+    pub fn new(position: nalgebra_glm::Vec3, color: nalgebra_glm::Vec3) -> Self {
+        let mut position = nalgebra_glm::vec3_to_vec4(&position);
+        position.w = 1.0;
+        let mut color = nalgebra_glm::vec3_to_vec4(&color);
+        color.w = 1.0;
+        Self { position, color }
     }
 }
 
 #[repr(C)]
-#[derive(
-    Debug, Copy, Clone, serde::Serialize, serde::Deserialize, bytemuck::Pod, bytemuck::Zeroable,
-)]
-pub struct Vertex {
-    pub position: nalgebra_glm::Vec3,
-    pub normal: nalgebra_glm::Vec3,
-    pub uv_0: nalgebra_glm::Vec2,
-    pub uv_1: nalgebra_glm::Vec2,
-    pub joint_0: nalgebra_glm::Vec4,
-    pub weight_0: nalgebra_glm::Vec4,
-    pub color_0: nalgebra_glm::Vec3,
+#[derive(Default, Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Uniform {
+    pub view: nalgebra_glm::Mat4,
+    pub projection: nalgebra_glm::Mat4,
+    pub camera_position: nalgebra_glm::Vec4,
 }
 
-impl Default for Vertex {
-    fn default() -> Self {
-        Self {
-            position: nalgebra_glm::Vec3::default(),
-            normal: nalgebra_glm::Vec3::default(),
-            uv_0: nalgebra_glm::Vec2::default(),
-            uv_1: nalgebra_glm::Vec2::default(),
-            joint_0: nalgebra_glm::Vec4::default(),
-            weight_0: nalgebra_glm::Vec4::default(),
-            color_0: nalgebra_glm::vec3(1.0, 1.0, 1.0),
+fn create_pipeline(
+    gpu: &crate::gpu::Gpu,
+    bind_group_layouts: &[&wgpu::BindGroupLayout],
+) -> wgpu::RenderPipeline {
+    let shader_module = gpu
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(SHADER_SOURCE)),
+        });
+
+    let pipeline_layout = gpu
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts,
+            push_constant_ranges: &[],
+        });
+
+    gpu.device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader_module,
+                entry_point: "vertex_main",
+                buffers: &[crate::resource::Vertex::description(
+                    &crate::resource::Vertex::attributes(),
+                )],
+            },
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Line,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_module,
+                entry_point: "fragment_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: gpu.surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+        })
+}
+
+impl crate::resource::Vertex {
+    pub fn attributes() -> Vec<wgpu::VertexAttribute> {
+        wgpu::vertex_attr_array![
+            0 => Float32x3, // position
+            1 => Float32x3, // normal
+            2 => Float32x2, // uv_0
+            3 => Float32x2, // uv_1
+            4 => Float32x4, // joint_0
+            5 => Float32x4, // weight_0
+            6 => Float32x3, // color_0
+        ]
+        .to_vec()
+    }
+
+    pub fn description(attributes: &[wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<crate::resource::Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes,
         }
     }
 }
 
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SceneGraph(pub petgraph::Graph<Node, ()>);
-
-impl std::fmt::Display for SceneGraph {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{:?}",
-            petgraph::dot::Dot::with_config(&self.0, &[petgraph::dot::Config::EdgeNoLabel])
-        )
-    }
+#[repr(C, align(256))]
+#[derive(Default, Copy, Clone, Debug, bytemuck::Zeroable)]
+pub struct DynamicUniform {
+    pub model: nalgebra_glm::Mat4,
 }
 
-impl std::ops::Deref for SceneGraph {
-    type Target = petgraph::Graph<Node, ()>;
+const SHADER_SOURCE: &str = "
+struct Uniform {
+    view: mat4x4<f32>,
+    projection: mat4x4<f32>,
+    camera_position: vec4<f32>,
+};
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+@group(0) @binding(0)
+var<uniform> ubo: Uniform;
+
+struct DynamicUniform {
+    model: mat4x4<f32>,
+};
+
+@group(1) @binding(0)
+var<uniform> mesh_ubo: DynamicUniform;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv_0: vec2<f32>,
+    @location(3) uv_1: vec2<f32>,
+    @location(4) joint_0: vec4<f32>,
+    @location(5) weight_0: vec4<f32>,
+    @location(6) color_0: vec3<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) normal: vec3<f32>,
+    @location(1) color: vec3<f32>,
+};
+
+@vertex
+fn vertex_main(vert: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let mvp = ubo.projection * ubo.view * mesh_ubo.model;
+    out.color = vert.color_0;
+    out.position = mvp * vec4(vert.position, 1.0);
+    out.normal = vec4((mvp * vec4(vert.normal, 0.0)).xyz, 1.0).xyz;
+    return out;
+};
+
+@fragment
+fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let object_color: vec4<f32> = vec4(in.color, 1.0);
+
+    let ambient_strength = 0.1;
+    let ambient_color = ambient_strength;
+
+    let result = (ambient_color) * object_color.rgb;
+
+    return vec4<f32>(result, object_color.a);
 }
-
-impl std::ops::DerefMut for SceneGraph {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl SceneGraph {
-    pub fn global_transform(&self, node_index: petgraph::graph::NodeIndex) -> nalgebra_glm::Mat4 {
-        let transform = self.0[node_index].transform.matrix();
-        match self
-            .0
-            .neighbors_directed(node_index, petgraph::Direction::Incoming)
-            .next()
-        {
-            Some(parent_node_index) => self.global_transform(parent_node_index) * transform,
-            None => transform,
-        }
-    }
-}
-
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Mesh {
-    pub label: String,
-    pub primitives: Vec<Primitive>,
-}
-
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Primitive {
-    pub mode: PrimitiveMode,
-    pub material: String,
-    pub vertices: Vec<Vertex>,
-    pub indices: Vec<u32>,
-}
-
-#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Node {
-    pub id: String,
-    pub label: String,
-    pub transform: Transform,
-    pub components: Vec<NodeComponent>,
-}
-
-impl std::fmt::Debug for Node {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.label)
-    }
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub enum NodeComponent {
-    // TODO: make these just take strings that key into the scene's resources
-    Camera(Camera),
-    Mesh(String),
-    Light(Light),
-}
-
-#[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Transform {
-    pub translation: nalgebra_glm::Vec3,
-    pub rotation: nalgebra_glm::Quat,
-    pub scale: nalgebra_glm::Vec3,
-}
-
-impl Default for Transform {
-    fn default() -> Self {
-        Self {
-            translation: nalgebra_glm::Vec3::new(0.0, 0.0, 0.0),
-            rotation: nalgebra_glm::Quat::identity(),
-            scale: nalgebra_glm::Vec3::new(1.0, 1.0, 1.0),
-        }
-    }
-}
-
-impl From<([f32; 3], [f32; 4], [f32; 3])> for Transform {
-    fn from((translation, rotation, scale): ([f32; 3], [f32; 4], [f32; 3])) -> Self {
-        Self {
-            translation: nalgebra_glm::vec3(translation[0], translation[1], translation[2]),
-            rotation: nalgebra_glm::quat(rotation[0], rotation[1], rotation[2], rotation[3]),
-            scale: nalgebra_glm::vec3(scale[0], scale[1], scale[2]),
-        }
-    }
-}
-
-impl From<Transform> for nalgebra_glm::Mat4 {
-    fn from(transform: Transform) -> Self {
-        nalgebra_glm::translation(&transform.translation)
-            * nalgebra_glm::quat_to_mat4(&transform.rotation)
-            * nalgebra_glm::scaling(&transform.scale)
-    }
-}
-
-pub fn decompose_matrix(
-    matrix: &nalgebra_glm::Mat4,
-) -> (nalgebra_glm::Vec3, nalgebra_glm::Quat, nalgebra_glm::Vec3) {
-    let translation = nalgebra_glm::Vec3::new(matrix.m14, matrix.m24, matrix.m34);
-
-    let (scale_x, scale_y, scale_z) = (
-        nalgebra_glm::length(&nalgebra_glm::Vec3::new(matrix.m11, matrix.m12, matrix.m13)),
-        nalgebra_glm::length(&nalgebra_glm::Vec3::new(matrix.m21, matrix.m22, matrix.m23)),
-        nalgebra_glm::length(&nalgebra_glm::Vec3::new(matrix.m31, matrix.m32, matrix.m33)),
-    );
-
-    let scale = nalgebra_glm::Vec3::new(scale_x, scale_y, scale_z);
-
-    // Normalize the matrix to extract rotation
-    let rotation_matrix = nalgebra_glm::mat3(
-        matrix.m11 / scale_x,
-        matrix.m12 / scale_y,
-        matrix.m13 / scale_z,
-        matrix.m21 / scale_x,
-        matrix.m22 / scale_y,
-        matrix.m23 / scale_z,
-        matrix.m31 / scale_x,
-        matrix.m32 / scale_y,
-        matrix.m33 / scale_z,
-    );
-
-    let rotation = nalgebra_glm::mat3_to_quat(&rotation_matrix);
-
-    (translation, rotation, scale)
-}
-
-impl From<nalgebra_glm::Mat4> for Transform {
-    fn from(matrix: nalgebra_glm::Mat4) -> Self {
-        let (translation, rotation, scale) = decompose_matrix(&matrix);
-        Self {
-            translation,
-            rotation,
-            scale,
-        }
-    }
-}
-
-impl Transform {
-    pub fn matrix(&self) -> nalgebra_glm::Mat4 {
-        nalgebra_glm::Mat4::from(*self)
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct Camera {
-    pub projection: Projection,
-    pub orientation: Orientation,
-}
-
-impl Camera {
-    pub fn projection_matrix(&self, aspect_ratio: f32) -> nalgebra_glm::Mat4 {
-        match &self.projection {
-            Projection::Perspective(camera) => camera.matrix(aspect_ratio),
-            Projection::Orthographic(camera) => camera.matrix(),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub enum Projection {
-    Perspective(PerspectiveCamera),
-    Orthographic(OrthographicCamera),
-}
-
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct PerspectiveCamera {
-    pub aspect_ratio: Option<f32>,
-    pub y_fov_rad: f32,
-    pub z_far: Option<f32>,
-    pub z_near: f32,
-}
-
-impl PerspectiveCamera {
-    pub fn matrix(&self, viewport_aspect_ratio: f32) -> nalgebra_glm::Mat4 {
-        let aspect_ratio = if let Some(aspect_ratio) = self.aspect_ratio {
-            aspect_ratio
-        } else {
-            viewport_aspect_ratio
-        };
-
-        if let Some(z_far) = self.z_far {
-            nalgebra_glm::perspective_zo(aspect_ratio, self.y_fov_rad, self.z_near, z_far)
-        } else {
-            nalgebra_glm::infinite_perspective_rh_zo(aspect_ratio, self.y_fov_rad, self.z_near)
-        }
-    }
-}
-
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct OrthographicCamera {
-    pub x_mag: f32,
-    pub y_mag: f32,
-    pub z_far: f32,
-    pub z_near: f32,
-}
-
-impl OrthographicCamera {
-    pub fn matrix(&self) -> nalgebra_glm::Mat4 {
-        let z_sum = self.z_near + self.z_far;
-        let z_diff = self.z_near - self.z_far;
-        nalgebra_glm::Mat4::new(
-            1.0 / self.x_mag,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0 / self.y_mag,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            2.0 / z_diff,
-            0.0,
-            0.0,
-            0.0,
-            z_sum / z_diff,
-            1.0,
-        )
-    }
-}
-
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct Orientation {
-    pub min_radius: f32,
-    pub max_radius: f32,
-    pub radius: f32,
-    pub offset: nalgebra_glm::Vec3,
-    pub sensitivity: nalgebra_glm::Vec2,
-    pub direction: nalgebra_glm::Vec2,
-}
-
-impl Orientation {
-    pub fn direction(&self) -> nalgebra_glm::Vec3 {
-        nalgebra_glm::vec3(
-            self.direction.y.sin() * self.direction.x.sin(),
-            self.direction.y.cos(),
-            self.direction.y.sin() * self.direction.x.cos(),
-        )
-    }
-
-    pub fn rotate(&mut self, position_delta: &nalgebra_glm::Vec2) {
-        let delta = position_delta.component_mul(&self.sensitivity);
-        self.direction.x += delta.x;
-        self.direction.y = nalgebra_glm::clamp_scalar(
-            self.direction.y + delta.y,
-            10.0_f32.to_radians(),
-            170.0_f32.to_radians(),
-        );
-    }
-
-    pub fn up(&self) -> nalgebra_glm::Vec3 {
-        self.right().cross(&self.direction())
-    }
-
-    pub fn right(&self) -> nalgebra_glm::Vec3 {
-        self.direction().cross(&nalgebra_glm::Vec3::y()).normalize()
-    }
-
-    pub fn pan(&mut self, offset: &nalgebra_glm::Vec2) {
-        self.offset += self.right() * offset.x;
-        self.offset += self.up() * offset.y;
-    }
-
-    pub fn position(&self) -> nalgebra_glm::Vec3 {
-        (self.direction() * self.radius) + self.offset
-    }
-
-    pub fn zoom(&mut self, distance: f32) {
-        self.radius -= distance;
-        if self.radius < self.min_radius {
-            self.radius = self.min_radius;
-        }
-        if self.radius > self.max_radius {
-            self.radius = self.max_radius;
-        }
-    }
-
-    pub fn look_at_offset(&self) -> nalgebra_glm::Quat {
-        self.look(self.offset - self.position())
-    }
-
-    pub fn look_forward(&self) -> nalgebra_glm::Quat {
-        self.look(-self.direction())
-    }
-
-    fn look(&self, point: nalgebra_glm::Vec3) -> nalgebra_glm::Quat {
-        nalgebra_glm::quat_conjugate(&nalgebra_glm::quat_look_at(
-            &point,
-            &nalgebra_glm::Vec3::y(),
-        ))
-    }
-}
-
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum PrimitiveMode {
-    Points,
-    Lines,
-    LineLoop,
-    LineStrip,
-    #[default]
-    Triangles,
-    TriangleStrip,
-    TriangleFan,
-}
-
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PrimitiveDrawCommand {
-    pub vertex_offset: usize,
-    pub index_offset: usize,
-    pub vertices: usize,
-    pub indices: usize,
-}
-
-#[derive(Default, Debug, Copy, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Light {
-    pub intensity: f32,
-    pub range: f32,
-    pub color: nalgebra_glm::Vec3,
-    pub kind: LightKind,
-}
-
-#[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize)]
-pub enum LightKind {
-    Directional,
-    Point,
-    Spot {
-        inner_cone_angle: f32,
-        outer_cone_angle: f32,
-    },
-}
-
-impl Default for LightKind {
-    fn default() -> Self {
-        Self::Directional
-    }
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Texture {
-    pub label: String,
-    pub image: String,
-    pub sampler: String,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Image {
-    pub pixels: Vec<u8>,
-    pub format: ImageFormat,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ImageFormat {
-    R8,
-    R8G8,
-    R8G8B8,
-    R8G8B8A8,
-    B8G8R8,
-    B8G8R8A8,
-    R16,
-    R16G16,
-    R16G16B16,
-    R16G16B16A16,
-    R16F,
-    R16G16F,
-    R16G16B16F,
-    R16G16B16A16F,
-    R32,
-    R32G32,
-    R32G32B32,
-    R32G32B32A32,
-    R32F,
-    R32G32F,
-    R32G32B32F,
-    R32G32B32A32F,
-}
-
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Sampler {
-    pub min_filter: Filter,
-    pub mag_filter: Filter,
-    pub wrap_s: WrappingMode,
-    pub wrap_t: WrappingMode,
-}
-
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub enum WrappingMode {
-    ClampToEdge,
-    MirroredRepeat,
-    #[default]
-    Repeat,
-}
-
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub enum Filter {
-    #[default]
-    Nearest,
-    Linear,
-}
-
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Material {
-    pub base_color_factor: nalgebra_glm::Vec4,
-    pub base_color_texture: String,
-}
-
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub enum AlphaMode {
-    #[default]
-    Opaque = 1,
-    Mask,
-    Blend,
-}
-
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Animation {
-    pub label: String,
-    pub time: f32,
-    pub channels: Vec<Channel>,
-    pub max_animation_time: f32,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Channel {
-    pub target: String,
-    pub inputs: Vec<f32>,
-    pub transformations: TransformationSet,
-    pub interpolation: Interpolation,
-}
-
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub enum Interpolation {
-    #[default]
-    Linear,
-    Step,
-    CubicSpline,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum TransformationSet {
-    Translations(Vec<nalgebra_glm::Vec3>),
-    Rotations(Vec<nalgebra_glm::Vec4>),
-    Scales(Vec<nalgebra_glm::Vec3>),
-    MorphTargetWeights(Vec<f32>),
-}
-
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Skin {
-    pub label: String,
-    pub joints: Vec<Joint>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Joint {
-    pub target: String,
-    pub inverse_bind_matrix: nalgebra_glm::Mat4,
-}
+";
